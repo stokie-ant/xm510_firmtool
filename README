@@ -1,0 +1,34 @@
+A firmware packer/unpacker for xm510 ip camera module firmware blob.
+It was made as the chance of getting the source code from the manufacturer is slim to none at best.
+At least this way we have some control over our hardware.
+
+requirements - bash, zip, unzip, make, gcc, zlib, u-boot-tools (for mkimage)
+
+As root because permissions on firmware filesystem is root...
+
+./firmtool unpack <firmware image bin>
+To unpack the firmware.
+
+./firmtool pack <firmware image bin>
+To repack all your changes into the firmware bin.
+
+./firmtool tweaks
+To apply some tweaks to the unpacked firmware
+
+./firmtool clean
+To remove all firmware files and built programs
+
+<firmware image bin> should be in the current directory with this script
+It will be overwritten with any changes
+
+The uImages will be extracted to the uImages directory along with Install and InstallDesc wich are the upgrade scripts.
+Cramfs images will be extracted to the Images directory,
+u-boot.bin and u-boot.env to u-boot. A text file version of u-boot.env is here that you can edit.
+Cramfs filesystem images are then extracted to the fs directory, make your changes in here.
+
+<firmware image bin> will be overwritten so make sure to keep a copy of the original just in case something goes wrong.
+
+Tested on Debian 9. Your results may vary
+
+Make sure to always end the env file with a new line or the last line will be ignored
+

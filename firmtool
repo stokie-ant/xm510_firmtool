@@ -1,0 +1,202 @@
+#!/bin/bash
+
+#
+# Copyright (C) 2019 Anthony Blakemore (stokie-ant@hotmail.co.uk)
+#
+# This program is free software: you can redistribute it and/or modify  
+# it under the terms of the GNU General Public License as published by  
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but 
+# WITHOUT ANY WARRANTY; without even the implied warranty of 
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU 
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License 
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+proghelp () {
+echo "
+# firmware packer/unpacker for xm510 ip camera firmware blob
+#
+# run ./firmtool unpack <firmware image bin>
+# to unpack the firmware.
+#
+# run ./firmtool pack <firmware image bin>
+# to repack all your changes into the firmware bin
+#
+# run ./firmtool tweaks
+# to apply some tweaks to the unpacked firmware
+#
+# run ./firmtool clean
+# to remove all created files
+#
+# <firmware image bin> should be in the current directory with this script
+# It will be overwritten with any changes
+#"
+}
+
+option=$1
+firmwarebin=$2
+
+if [ ! -f "src/cramfs-1.1/cramfsck" ] && [ ! $option == clean ] && [ $2 ]
+then
+	if make -C src/cramfs-1.1
+	then
+		echo "Make cramfs success!"
+	else
+		echo "Something broke while compiling cramfs..."
+		exit 1
+	fi
+fi
+
+case $option in
+unpack)
+	if [ ! $2 ]
+	then
+		echo "Are you trying to break something? Give me a firmware .bin to work with!"
+		exit 1
+	fi
+	echo "--> Unpacking uImages from $firmwarebin"
+	rm -f -r uImages
+	unzip -q $firmwarebin -d uImages
+
+	echo "--> Unpacking Images from uImages"
+	rm -f -r Images u-boot
+	mkdir Images u-boot
+	dd if=uImages/romfs-x.cramfs.img of=Images/romfs-x.cramfs ibs=64 skip=1 status=none
+	dd if=uImages/user-x.cramfs.img of=Images/user-x.cramfs ibs=64 skip=1 status=none
+	dd if=uImages/web-x.cramfs.img of=Images/web-x.cramfs ibs=64 skip=1 status=none
+	dd if=uImages/custom-x.cramfs.img of=Images/custom-x.cramfs ibs=64 skip=1 status=none
+
+	dd if=uImages/u-boot.bin.img of=u-boot/u-boot.bin ibs=64 skip=1 status=none
+	dd if=uImages/u-boot.env.img of=u-boot/u-boot.env ibs=64 skip=1 status=none
+	dd if=u-boot/u-boot.env ibs=4 skip=1 status=none|strings>u-boot/env
+
+	echo "--> Unpacking fs from cramfs images"
+	rm -f -r fs
+	mkdir fs
+	src/cramfs-1.1/cramfsck -x fs/romfs Images/romfs-x.cramfs
+	src/cramfs-1.1/cramfsck -x fs/user Images/user-x.cramfs
+	src/cramfs-1.1/cramfsck -x fs/web Images/web-x.cramfs
+	src/cramfs-1.1/cramfsck -x fs/custom Images/custom-x.cramfs
+	echo
+	echo "--> Ignore any file extends past end of filesystem messages above"
+	echo
+	echo "--> Done!"
+;;
+pack)
+	if [ ! $2 ]
+	then
+		echo "Are you trying to break something? Give me a firmware .bin to work with!"
+		exit 1
+	fi
+
+	echo "--> Packing fs into cramfs"
+	src/cramfs-1.1/mkcramfs fs/romfs Images/romfs-x.cramfs >/dev/null
+	src/cramfs-1.1/mkcramfs fs/user Images/user-x.cramfs >/dev/null
+	src/cramfs-1.1/mkcramfs fs/web Images/web-x.cramfs >/dev/null
+	src/cramfs-1.1/mkcramfs fs/custom Images/custom-x.cramfs >/dev/null
+
+	echo "--> Creating u-boot.env.bin"
+	cat u-boot/env|while IFS='' read -r line; do echo -en $line'\0'>>env.a; done
+	dd if=env.a of=env.b bs=64K conv=sync status=none
+	dd if=env.b of=env.a bs=1 count=65532 status=none
+	CRC="$(crc32 env.a)"
+	echo -ne \\x${CRC:6:2}\\x${CRC:4:2}\\x${CRC:2:2}\\x${CRC:0:2}>crc
+	cat crc env.a >u-boot/u-boot.env
+	rm -f env.a env.b crc
+
+	echo "--> Packing cramfs into uImage"
+	mkimage -A arm -O linux -T firmware -C gzip -a 00000000 -e 0002f800 -n linux -d u-boot/u-boot.bin uImages/u-boot.bin.img >/dev/null
+	mkimage -A arm -O linux -T firmware -C gzip -a 00030000 -e 00040000 -n linux -d u-boot/u-boot.env uImages/u-boot.env.img >/dev/null
+	mkimage -A arm -O linux -T kernel -C gzip -a 00040000 -e 003b0000 -n linux -d Images/romfs-x.cramfs uImages/romfs-x.cramfs.img >/dev/null
+	mkimage -A arm -O linux -T kernel -C gzip -a 003b0000 -e 00630000 -n linux -d Images/user-x.cramfs uImages/user-x.cramfs.img >/dev/null
+	mkimage -A arm -O linux -T standalone -C gzip -a 00630000 -e 00770000 -n linux -d Images/web-x.cramfs uImages/web-x.cramfs.img >/dev/null
+	mkimage -A arm -O linux -T standalone -C gzip -a 00770000 -e 007b0000 -n linux -d Images/custom-x.cramfs uImages/custom-x.cramfs.img >/dev/null
+
+	echo "--> Packing uImages into $firmwarebin"
+	cd uImages
+	zip -q ../$firmwarebin *
+	echo "--> Done!"
+;;
+tweaks)
+	changepw(){
+	read -p $'Enter password:\n'  pass
+	echo
+	hashed=`mkpasswd --method=md5 $pass`
+	echo "root:"$hashed":0:0:root:/:/bin/sh" >fs/romfs/etc/passwd
+	echo "OK."
+	echo
+	}
+	
+	if grep "d5iRRVQ5ZeRTrJwGjRy" fs/romfs/etc/passwd >/dev/null
+	then
+		echo "Default password detected"
+		echo
+	else
+		echo "Non default root password detected"
+		echo
+	fi
+	read -p $'Change root password? Y/n?\n' -n 1 -r
+	echo
+	if [[ $REPLY =~ ^[Yy]$ ]]
+	then
+		changepw
+	fi
+
+	if grep "telnetctrl=1" u-boot/env >/dev/null
+	then
+		echo "Telnet already enabled"
+		echo
+	else
+		read -p $'Enable telnet? Y/n?\n' -n 1 -r
+		echo
+		if [[ $REPLY =~ ^[Yy]$ ]]
+		then
+			echo "telnetctrl=1">>u-boot/env
+			sed -i 's/#telnetd/telnetd/' fs/romfs/etc/init.d/rcS
+			echo OK.
+			echo
+		fi
+	fi
+	
+    if grep "xmuart=true" u-boot/env >/dev/null
+	then
+		echo "UART already enabled"
+		echo
+	else
+		read -p $'Enable UART? Y/n?\n' -n 1 -r
+		echo
+		if [[ $REPLY =~ ^[Yy]$ ]]
+		then
+			echo "xmuart=true">>u-boot/env
+			echo "OK."
+			echo
+		fi
+	fi
+	if grep "#::askfirst:" fs/romfs/etc/inittab >/dev/null
+	then
+		read -p $'Change UART login to sh?\n(for password-less UART)\n' -n 1 -r
+		echo
+		if [[ $REPLY =~ ^[Yy]$ ]]
+		then
+			sed -i 's/#::askfirst:\/bin\/sh/::askfirst:-\/bin\/sh/' fs/romfs/etc/inittab
+			sed -i 's/::respawn:/#::respawn:/' fs/romfs/etc/inittab
+			echo "OK."
+			echo
+		fi
+	else
+		echo "UART shell already changed"
+		echo
+	fi
+
+;;
+clean)
+	rm -f -r uImages Images u-boot fs src/cramfs-1.1/cramfsck src/cramfs-1.1/mkcramfs
+;;
+*)
+	proghelp
+;;
+esac
