@@ -1,5 +1,5 @@
 A firmware packer/unpacker for xm510 ip camera module firmware blob.
-It was made as the chance of getting the source code from the manufacturer is slim to none at best.
+As the chance of getting the source code from the manufacturer is slim to none at best.
 At least this way we have some control over our hardware.
 
 requirements - bash, zip, unzip, make, gcc, zlib, u-boot-tools (for mkimage)
